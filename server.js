@@ -395,4 +395,11 @@ const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
   console.log(`UC Auction server on port ${PORT}`);
   startAuctionTimer();
+
+  // Start admin bot if token is set
+  if (process.env.ADMIN_BOT_TOKEN && process.env.ADMIN_CHAT_ID) {
+    const adminBot = require('./admin-bot');
+    adminBot.poll();
+    console.log('Admin bot started');
+  }
 });

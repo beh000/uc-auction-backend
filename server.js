@@ -137,7 +137,27 @@ function tgSend(token, chatId, text, keyboard) {
 }
 
 function notifyChannel(text) {
-  tgSend(process.env.ADMIN_BOT_TOKEN, process.env.CHANNEL_ID, text);
+  const channelId = process.env.CHANNEL_ID;
+  const token = process.env.ADMIN_BOT_TOKEN;
+  if (!channelId || !token) { console.log('Channel not configured'); return; }
+  const body = JSON.stringify({ chat_id: channelId, text, parse_mode: 'HTML' });
+  const options = {
+    hostname: 'api.telegram.org',
+    path: `/bot${token}/sendMessage`,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) }
+  };
+  const req = https.request(options, res => {
+    let d = ''; res.on('data', c => d += c);
+    res.on('end', () => {
+      try {
+        const r = JSON.parse(d);
+        if (!r.ok) console.error('Channel error:', r.description, 'channelId:', channelId);
+      } catch(e) {}
+    });
+  });
+  req.on('error', e => console.error('Channel error:', e.message));
+  req.write(body); req.end();
 }
 
 function notifyUser(userId, text, keyboard) {

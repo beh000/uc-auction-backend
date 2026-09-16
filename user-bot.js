@@ -198,7 +198,7 @@ async function handleUpdate(update) {
           const req = http.request({
             hostname: '127.0.0.1', port: process.env.PORT || 3000,
             path: '/use-referral', method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) }
+            headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body), 'X-Internal-Key': process.env.INTERNAL_KEY || '' }
           }, res => {
             let d = ''; res.on('data', c => d += c);
             res.on('end', async () => {
@@ -241,7 +241,7 @@ async function handleUpdate(update) {
       const req = http.request({
         hostname: '127.0.0.1', port: process.env.PORT || 3000,
         path: '/use-promo', method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) }
+        headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body), 'X-Internal-Key': process.env.INTERNAL_KEY || '' }
       }, res => {
         let d = ''; res.on('data', c => d += c);
         res.on('end', async () => {
@@ -358,12 +358,16 @@ function notifyUserRejected(telegramId) {
 }
 
 async function poll() {
+  let healthy = true;
   try {
     const res = await tgRequest('getUpdates', {
       offset: lastUpdateId + 1, timeout: 30,
       allowed_updates: ['message', 'callback_query']
     });
-    if (res.result?.length) {
+    if (res.ok === false) {
+      console.error('User poll error:', res.description || 'unknown');
+      healthy = false;
+    } else if (res.result?.length) {
       for (const update of res.result) {
         lastUpdateId = update.update_id;
         try { await handleUpdate(update); } catch(e) { console.error('User bot error:', e.message); }
@@ -371,9 +375,10 @@ async function poll() {
     }
   } catch(e) {
     console.error('User poll error:', e.message);
-    await new Promise(r => setTimeout(r, 3000));
+    healthy = false;
   }
-  setImmediate(poll);
+  if (healthy) setImmediate(poll);
+  else setTimeout(poll, 3000);
 }
 
 module.exports = { poll, askWinnerPubgId, notifyUserCoinsAdded, notifyUserUCDone, notifyUserRejected, sessions, winnerSessions };

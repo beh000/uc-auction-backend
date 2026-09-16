@@ -309,6 +309,7 @@ async function handleUpdate(update) {
     const lotKey = parts[1];
     const param = parts[2];
     const value = parseInt(parts[3]);
+    if (isNaN(value) || value <= 0) { await send(chatId, '❌ Значение должно быть положительным числом'); return; }
     const s = await api('/settings?adminKey=' + ADMIN_KEY);
     const lots = s.lots || {};
     if (!lots[lotKey]) { await send(chatId, '❌ Лот не найден. Доступные: ' + Object.keys(lots).join(', ')); return; }
@@ -367,12 +368,16 @@ function receivePubgId(telegramId, pubgId, uc, prize, name) {
 }
 
 async function poll() {
+  let healthy = true;
   try {
     const res = await tgRequest('getUpdates', {
       offset: lastUpdateId + 1, timeout: 30,
       allowed_updates: ['message', 'callback_query']
     });
-    if (res.result?.length) {
+    if (res.ok === false) {
+      console.error('Admin poll error:', res.description || 'unknown');
+      healthy = false;
+    } else if (res.result?.length) {
       for (const update of res.result) {
         lastUpdateId = update.update_id;
         try { await handleUpdate(update); } catch(e) { console.error('Admin error:', e.message); }
@@ -380,9 +385,12 @@ async function poll() {
     }
   } catch(e) {
     console.error('Admin poll error:', e.message);
-    await new Promise(r => setTimeout(r, 3000));
+    healthy = false;
   }
-  setImmediate(poll);
+  // tgRequest never rejects on API errors (it resolves {ok:false}), so without
+  // this explicit check a bad token/rate-limit used to retry with no backoff at all.
+  if (healthy) setImmediate(poll);
+  else setTimeout(poll, 3000);
 }
 
 async function notifyAdmin(text, keyboard) {

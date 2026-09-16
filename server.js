@@ -65,6 +65,44 @@ function tgSend(token, chatId, text, keyboard) {
   req.write(body); req.end();
 }
 
+
+function notifyChannelWithPhoto(text, lot) {
+  const channelId = process.env.CHANNEL_ID;
+  const token = process.env.ADMIN_BOT_TOKEN;
+  const botUsername = process.env.BOT_USERNAME || 'UCBidbot';
+  if (!channelId || !token) return;
+
+  // UC icon based on amount
+  const icon = lot.uc >= 1800 ? 'https://i.imgur.com/crown.png' : lot.uc >= 660 ? 'https://i.imgur.com/diamond.png' : 'https://i.imgur.com/coin.png';
+
+  // Send message with inline button to open bot
+  const body = JSON.stringify({
+    chat_id: channelId,
+    text: text + `\n\n🔗 <a href="https://t.me/${botUsername}/auction">Открыть аукцион</a>`,
+    parse_mode: 'HTML',
+    reply_markup: {
+      inline_keyboard: [[
+        { text: '⚡ Участвовать', url: `https://t.me/${botUsername}/auction` }
+      ]]
+    }
+  });
+  const options = {
+    hostname: 'api.telegram.org',
+    path: `/bot${token}/sendMessage`,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) }
+  };
+  const req = https.request(options, res => {
+    let d = ''; res.on('data', c => d += c);
+    res.on('end', () => {
+      try { const r = JSON.parse(d); if (!r.ok) console.error('Channel photo notify error:', r.description); }
+      catch(e) {}
+    });
+  });
+  req.on('error', e => console.error('Channel photo error:', e.message));
+  req.write(body); req.end();
+}
+
 function notifyChannel(text) {
   const channelId = process.env.CHANNEL_ID;
   const token = process.env.ADMIN_BOT_TOKEN;
@@ -78,9 +116,9 @@ function notifyUser(userId, text, keyboard) {
 
 function getLots() {
   return settings.lots || {
-    '325':  { uc: 325,  prize: '325 UC',  marketPrice: 55000 },
-    '660':  { uc: 660,  prize: '660 UC',  marketPrice: 96000 },
-    '1800': { uc: 1800, prize: '1800 UC', marketPrice: 245000 }
+    '325':  { uc: 325,  prize: '325 UC',  marketPrice: 58000,  bidCoins: 1 },
+    '660':  { uc: 660,  prize: '660 UC',  marketPrice: 115000, bidCoins: 2 },
+    '1800': { uc: 1800, prize: '1800 UC', marketPrice: 300000, bidCoins: 4 }
   };
 }
 
@@ -132,6 +170,7 @@ function getAuctionState(telegramId) {
     leaderName: auction.leaderName,
     leaderId: auction.leaderId,
     active: auction.active,
+    bidCoins: getLots()[auction.lotKey]?.bidCoins || 1,
     bidHistory: auction.bidHistory.slice(-8),
     voteSession: null
   };
@@ -244,12 +283,13 @@ async function launchAuction(lotKey) {
   startAuctionTimer();
 
   const lots = getLots();
-  notifyChannel(
+  notifyChannelWithPhoto(
     `🔥 <b>Аукцион начался!</b>\n\n` +
     `🎁 Лот: <b>${lots[lotKey].prize}</b>\n` +
     `💰 Рыночная цена: ${lots[lotKey].marketPrice.toLocaleString('ru-RU')} сум\n` +
-    `🪙 1 ставка = 1 коин (${settings.coinCost || 500} сум)\n\n` +
-    `👉 Участвуй прямо сейчас!`
+    `🪙 1 ставка = ${lots[lotKey].bidCoins || 1} коин(а) = ${(lots[lotKey].bidCoins||1) * (settings.coinCost||500)} сум\n\n` +
+    `👉 Участвуй прямо сейчас!`,
+    lots[lotKey]
   );
 }
 
@@ -417,15 +457,20 @@ wss.on('connection', (ws) => {
         if (user.coins <= 0) { sendTo(ws, { type: 'ERROR', message: 'Нет коинов! Купи в магазине.' }); return; }
         if (auction.leaderId === id) { sendTo(ws, { type: 'ERROR', message: 'Ты уже лидер! Жди ставку другого.' }); return; }
 
+        const lotBidCoins = getLots()[auction.lotKey]?.bidCoins || 1;
         const coinCost = settings.coinCost || 500;
         const timerAdd = settings.timerAddPerBid || 10;
         const maxTimer = settings.timerSeconds || 30;
 
+        if (user.coins < lotBidCoins) {
+          sendTo(ws, { type: 'ERROR', message: `Нужно ${lotBidCoins} коинов для ставки! Купи в магазине.` });
+          return;
+        }
         await db.incrementUser(id, {
-          coins: -1,
-          myAuctionCoins: 1,
-          myAuctionSpent: coinCost,
-          totalSpent: coinCost,
+          coins: -lotBidCoins,
+          myAuctionCoins: lotBidCoins,
+          myAuctionSpent: coinCost * lotBidCoins,
+          totalSpent: coinCost * lotBidCoins,
           totalBids: 1
         });
 

@@ -31,9 +31,9 @@ async function connect() {
     { key: 'votesRequired', value: 10 },
     { key: 'auctionStartDelay', value: 300 }, // seconds after votes reached
     { key: 'lots', value: {
-      '325':  { uc: 325,  prize: '325 UC',  marketPrice: 55000 },
-      '660':  { uc: 660,  prize: '660 UC',  marketPrice: 96000 },
-      '1800': { uc: 1800, prize: '1800 UC', marketPrice: 245000 }
+      '325':  { uc: 325,  prize: '325 UC',  marketPrice: 55000,  bidCoins: 1 },
+      '660':  { uc: 660,  prize: '660 UC',  marketPrice: 96000,  bidCoins: 2 },
+      '1800': { uc: 1800, prize: '1800 UC', marketPrice: 245000, bidCoins: 4 }
     }}
   ];
   for (const s of settings) {
@@ -103,6 +103,30 @@ async function updateUser(telegramId, update) {
 async function incrementUser(telegramId, inc) {
   const d = await connect();
   await d.collection('users').updateOne({ telegramId: String(telegramId) }, { $inc: inc });
+}
+
+// Atomically deduct coins for a bid; returns null if the user doesn't have enough
+// (prevents the read-then-write race that let concurrent bids overdraw a balance).
+async function placeBid(telegramId, cost, spend) {
+  const d = await connect();
+  const id = String(telegramId);
+  const result = await d.collection('users').findOneAndUpdate(
+    { telegramId: id, coins: { $gte: cost } },
+    { $inc: { coins: -cost, myAuctionCoins: cost, myAuctionSpent: spend, totalSpent: spend, totalBids: 1 } },
+    { returnDocument: 'after' }
+  );
+  return result && Object.prototype.hasOwnProperty.call(result, 'value') ? result.value : result;
+}
+
+// Zero out the "coins spent in the current auction" counter for everyone when a
+// new auction launches, so the post-auction consolation discount only reflects
+// participation in that auction (it was never reset before).
+async function resetMyAuctionCoins() {
+  const d = await connect();
+  await d.collection('users').updateMany(
+    { myAuctionCoins: { $ne: 0 } },
+    { $set: { myAuctionCoins: 0, myAuctionSpent: 0 } }
+  );
 }
 
 async function getUserByReferral(code) {
@@ -231,7 +255,8 @@ function calculateLevel(wins, totalBids) {
 
 module.exports = {
   connect, getSettings, setSetting,
-  getUser, updateUser, incrementUser, getUserByReferral, getLeaderboard, getAllUsers,
+  getUser, updateUser, incrementUser, placeBid, resetMyAuctionCoins,
+  getUserByReferral, getLeaderboard, getAllUsers,
   saveAuction, getAuctionHistory,
   createPromo, usePromo, listPromos, deletePromo,
   addVote, getVotes, clearVotes,

@@ -3,6 +3,7 @@ const { WebSocketServer } = require('ws');
 const cors = require('cors');
 const http = require('http');
 const https = require('https');
+const crypto = require('crypto');
 const db = require('./database');
 
 const app = express();
@@ -48,6 +49,32 @@ function sendTo(ws, data) {
   try { if (ws.readyState === 1) ws.send(JSON.stringify(data)); } catch(e) {}
 }
 
+// Verifies Telegram WebApp initData against the bot token, per Telegram's own
+// signature scheme. Without this, any client could claim to be any telegramId
+// (the app previously trusted whatever id the browser sent), letting someone
+// bid, win prizes or collect referral bonuses as another real user.
+function verifyTelegramInitData(initData, botToken) {
+  if (!initData || !botToken) return null;
+  try {
+    const params = new URLSearchParams(initData);
+    const hash = params.get('hash');
+    if (!hash) return null;
+    params.delete('hash');
+    const pairs = [];
+    for (const [key, value] of params.entries()) pairs.push(`${key}=${value}`);
+    pairs.sort();
+    const dataCheckString = pairs.join('\n');
+    const secretKey = crypto.createHmac('sha256', 'WebAppData').update(botToken).digest();
+    const computedHash = crypto.createHmac('sha256', secretKey).update(dataCheckString).digest('hex');
+    if (computedHash.length !== hash.length || !crypto.timingSafeEqual(Buffer.from(computedHash), Buffer.from(hash))) return null;
+    const userStr = params.get('user');
+    if (!userStr) return null;
+    return JSON.parse(userStr);
+  } catch (e) {
+    return null;
+  }
+}
+
 function tgSend(token, chatId, text, keyboard) {
   if (!token || !chatId) return;
   const body = JSON.stringify({
@@ -75,31 +102,33 @@ function notifyChannelWithPhoto(text, lot) {
   // UC icon based on amount
   const icon = lot.uc >= 1800 ? 'https://i.imgur.com/crown.png' : lot.uc >= 660 ? 'https://i.imgur.com/diamond.png' : 'https://i.imgur.com/coin.png';
 
-  // Send message with inline button to open bot
+  const caption = text + `\n\n🔗 <a href="https://t.me/${botUsername}/auction">Открыть аукцион</a>`;
+  const keyboard = [[{ text: '⚡ Участвовать', url: `https://t.me/${botUsername}/auction` }]];
+
   const body = JSON.stringify({
     chat_id: channelId,
-    text: text + `\n\n🔗 <a href="https://t.me/${botUsername}/auction">Открыть аукцион</a>`,
+    photo: icon,
+    caption,
     parse_mode: 'HTML',
-    reply_markup: {
-      inline_keyboard: [[
-        { text: '⚡ Участвовать', url: `https://t.me/${botUsername}/auction` }
-      ]]
-    }
+    reply_markup: { inline_keyboard: keyboard }
   });
   const options = {
     hostname: 'api.telegram.org',
-    path: `/bot${token}/sendMessage`,
+    path: `/bot${token}/sendPhoto`,
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) }
   };
   const req = https.request(options, res => {
     let d = ''; res.on('data', c => d += c);
     res.on('end', () => {
-      try { const r = JSON.parse(d); if (!r.ok) console.error('Channel photo notify error:', r.description); }
-      catch(e) {}
+      try {
+        const r = JSON.parse(d);
+        // Fall back to a plain message if Telegram rejects the photo (e.g. bad URL)
+        if (!r.ok) { console.error('Channel photo notify error:', r.description); tgSend(token, channelId, caption, keyboard); }
+      } catch(e) {}
     });
   });
-  req.on('error', e => console.error('Channel photo error:', e.message));
+  req.on('error', e => { console.error('Channel photo error:', e.message); tgSend(token, channelId, caption, keyboard); });
   req.write(body); req.end();
 }
 
@@ -116,9 +145,9 @@ function notifyUser(userId, text, keyboard) {
 
 function getLots() {
   return settings.lots || {
-    '325':  { uc: 325,  prize: '325 UC',  marketPrice: 58000,  bidCoins: 1 },
-    '660':  { uc: 660,  prize: '660 UC',  marketPrice: 115000, bidCoins: 2 },
-    '1800': { uc: 1800, prize: '1800 UC', marketPrice: 300000, bidCoins: 4 }
+    '325':  { uc: 325,  prize: '325 UC',  marketPrice: 55000,  bidCoins: 1 },
+    '660':  { uc: 660,  prize: '660 UC',  marketPrice: 96000,  bidCoins: 2 },
+    '1800': { uc: 1800, prize: '1800 UC', marketPrice: 245000, bidCoins: 4 }
   };
 }
 
@@ -144,6 +173,13 @@ function createAuction(lotKey) {
   };
 }
 
+function getLotButtons() {
+  return Object.entries(getLots()).map(([key, lot]) => ({
+    text: `${lot.prize} (${voteSession.votes[key] || 0} голосов)`,
+    lotKey: key
+  }));
+}
+
 function getAuctionState(telegramId) {
   const state = {
     active: false,
@@ -152,7 +188,8 @@ function getAuctionState(telegramId) {
       active: true,
       votes: voteSession.votes,
       countdownEnd: voteSession.countdownEnd,
-      required: settings.votesRequired || 10
+      required: settings.votesRequired || 10,
+      lots: getLotButtons()
     } : null
   };
   if (!auction) return state;
@@ -171,6 +208,7 @@ function getAuctionState(telegramId) {
     leaderId: auction.leaderId,
     active: auction.active,
     bidCoins: getLots()[auction.lotKey]?.bidCoins || 1,
+    coinCost: settings.coinCost || 500,
     bidHistory: auction.bidHistory.slice(-8),
     voteSession: null
   };
@@ -188,15 +226,11 @@ function startVoteSession() {
   };
 
   const lots = getLots();
-  const lotButtons = Object.entries(lots).map(([key, lot]) => ({
-    text: `${lot.prize} (0 голосов)`,
-    lotKey: key
-  }));
 
   broadcast({
     type: 'VOTE_STARTED',
     voteId: voteSession.id,
-    lots: lotButtons,
+    lots: getLotButtons(),
     required: settings.votesRequired || 10
   });
 
@@ -276,8 +310,9 @@ async function launchAuction(lotKey) {
 
   auction = createAuction(lotKey);
 
-  // Reset myAuction stats
-  // (stored in DB per user, reset on join)
+  // Reset everyone's "spent in current auction" counter so the post-auction
+  // consolation discount reflects this auction only, not a lifetime total.
+  try { await db.resetMyAuctionCoins(); } catch(e) { console.error('resetMyAuctionCoins error:', e.message); }
 
   broadcast({ type: 'NEW_AUCTION', auction: getAuctionState() });
   startAuctionTimer();
@@ -414,13 +449,30 @@ wss.on('connection', (ws) => {
   ws.on('message', async (raw) => {
     let msg;
     try { msg = JSON.parse(raw.toString()); } catch(e) { return; }
-    const { type, telegramId, name } = msg;
+    const { type } = msg;
 
     if (type === 'PING') { sendTo(ws, { type: 'PONG' }); return; }
-    if (!telegramId) return;
-    const id = String(telegramId);
 
     if (type === 'JOIN') {
+      const claimedId = msg.telegramId ? String(msg.telegramId) : null;
+      const name = msg.name;
+      if (!claimedId) return;
+
+      // Trust the id embedded in Telegram's signed initData, if present, over
+      // whatever the client claims. A numeric (real) id without a valid
+      // signature is rejected outright — otherwise anyone could bid, win or
+      // collect referral bonuses as any other Telegram user.
+      let id = null;
+      const verifiedUser = msg.initData ? verifyTelegramInitData(msg.initData, process.env.USER_BOT_TOKEN) : null;
+      if (verifiedUser) {
+        id = String(verifiedUser.id);
+      } else if (claimedId.startsWith('g_')) {
+        id = claimedId; // anonymous guest session (e.g. testing outside Telegram) — no identity to spoof
+      } else {
+        sendTo(ws, { type: 'ERROR', message: 'Не удалось подтвердить личность Telegram' });
+        return;
+      }
+
       client.userId = id;
       try {
         const user = await db.getUser(id, name);
@@ -450,11 +502,17 @@ wss.on('connection', (ws) => {
       return;
     }
 
+    // Every message beyond JOIN/PING acts on whichever id was verified at
+    // JOIN time — never on an id supplied in the message itself.
+    const id = client.userId;
+    if (!id) { sendTo(ws, { type: 'ERROR', message: 'Сначала подключись (JOIN)' }); return; }
+
     if (type === 'BID') {
       if (!auction || !auction.active) { sendTo(ws, { type: 'ERROR', message: 'Аукцион не активен' }); return; }
+      const now = Date.now();
+      if (client.lastBidAt && now - client.lastBidAt < 300) return; // basic anti-spam/anti-bot throttle
+      client.lastBidAt = now;
       try {
-        const user = await db.getUser(id, name);
-        if (user.coins <= 0) { sendTo(ws, { type: 'ERROR', message: 'Нет коинов! Купи в магазине.' }); return; }
         if (auction.leaderId === id) { sendTo(ws, { type: 'ERROR', message: 'Ты уже лидер! Жди ставку другого.' }); return; }
 
         const lotBidCoins = getLots()[auction.lotKey]?.bidCoins || 1;
@@ -462,32 +520,30 @@ wss.on('connection', (ws) => {
         const timerAdd = settings.timerAddPerBid || 10;
         const maxTimer = settings.timerSeconds || 30;
 
-        if (user.coins < lotBidCoins) {
+        if (msg.name) await db.getUser(id, msg.name); // keep display name in sync
+
+        // Atomic "coins >= cost, then deduct" — fixes a race where two quick
+        // bids from the same user could both pass a stale balance check and
+        // send coins negative.
+        const updatedUser = await db.placeBid(id, lotBidCoins, coinCost * lotBidCoins);
+        if (!updatedUser) {
           sendTo(ws, { type: 'ERROR', message: `Нужно ${lotBidCoins} коинов для ставки! Купи в магазине.` });
           return;
         }
-        await db.incrementUser(id, {
-          coins: -lotBidCoins,
-          myAuctionCoins: lotBidCoins,
-          myAuctionSpent: coinCost * lotBidCoins,
-          totalSpent: coinCost * lotBidCoins,
-          totalBids: 1
-        });
 
         auction.currentPrice += settings.bidIncrement || 100;
         auction.bidCount++;
         auction.leaderId = id;
-        auction.leaderName = user.name;
+        auction.leaderName = updatedUser.name;
         auction.timeLeft = Math.min(auction.timeLeft + timerAdd, maxTimer);
 
         const bidEntry = {
-          userId: id, name: user.name, price: auction.currentPrice,
+          userId: id, name: updatedUser.name, price: auction.currentPrice,
           time: new Date().toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
         };
         auction.bidHistory.push(bidEntry);
         if (auction.bidHistory.length > 50) auction.bidHistory.shift();
 
-        const updatedUser = await db.getUser(id);
         sendTo(ws, {
           type: 'BID_CONFIRMED',
           coinsLeft: updatedUser.coins,
@@ -512,7 +568,7 @@ wss.on('connection', (ws) => {
     }
 
     if (type === 'BUY_REQUEST') {
-      const { username, count, price } = msg;
+      const { username, count, price, name } = msg;
       try {
         const adminBot = require('./admin-bot');
         const uStr = username ? `@${username}` : 'нет username';
@@ -617,11 +673,12 @@ app.post('/mark-withdrawn', async (req, res) => {
   const newPending = Math.max(0, user.ucPending - amount);
   const newWithdrawn = user.ucWithdrawn + amount;
 
-  // Update win history statuses
+  // Update win history statuses — only mark an entry withdrawn once `amount`
+  // fully covers it, so a partial payout can't get flagged as fully paid.
   const winHistory = user.winHistory || [];
   let remaining = amount;
   for (const w of winHistory) {
-    if (w.status === 'pending' && remaining > 0) { w.status = 'withdrawn'; remaining -= w.uc; }
+    if (w.status === 'pending' && remaining >= w.uc) { w.status = 'withdrawn'; remaining -= w.uc; }
   }
 
   await db.updateUser(String(telegramId), { ucPending: newPending, ucWithdrawn: newWithdrawn, winHistory });
@@ -645,7 +702,19 @@ app.post('/create-promo', async (req, res) => {
   } catch(e) { res.status(400).json({ error: 'Промокод уже существует' }); }
 });
 
+// Internal-only: called by user-bot.js on behalf of a Telegram-verified chat,
+// never by the Mini App directly — so a shared internal key (not the public
+// Mini App) gates it, closing off direct internet calls with an arbitrary telegramId.
+function requireInternalKey(req, res) {
+  if (!process.env.INTERNAL_KEY || req.headers['x-internal-key'] !== process.env.INTERNAL_KEY) {
+    res.status(403).json({ error: 'Нет доступа' });
+    return false;
+  }
+  return true;
+}
+
 app.post('/use-promo', async (req, res) => {
+  if (!requireInternalKey(req, res)) return;
   const { code, telegramId } = req.body;
   if (!code || !telegramId) return res.status(400).json({ error: 'code и telegramId обязательны' });
   const result = await db.usePromo(code, telegramId);
@@ -674,6 +743,7 @@ app.delete('/promo/:code', async (req, res) => {
 
 // Referral
 app.post('/use-referral', async (req, res) => {
+  if (!requireInternalKey(req, res)) return;
   const { telegramId, referralCode } = req.body;
   if (!telegramId || !referralCode) return res.status(400).json({ error: 'Обязательные поля' });
 
@@ -720,6 +790,7 @@ app.get('/admin/stats', async (req, res) => {
 });
 
 app.get('/user/:id', async (req, res) => {
+  if (req.query.adminKey !== process.env.ADMIN_KEY) return res.status(403).json({ error: 'Нет доступа' });
   try {
     const user = await db.getUser(req.params.id);
     const { telegramId, name, coins, totalSpent, wins, ucWon, ucPending, ucWithdrawn, winHistory, level, referralCode, referrals } = user;

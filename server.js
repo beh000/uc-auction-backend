@@ -352,6 +352,12 @@ async function endAuction() {
   auctionTimer = null;
   auction.active = false;
 
+  // Everything below can throw (DB calls) — without the try/finally, an error
+  // partway through left `auction` non-null forever, since the `auction = null`
+  // and "schedule next vote" lines below never ran. That silently froze the
+  // whole auction/vote cycle until the process was restarted.
+  try {
+
   if (auction.leaderId) {
     const user = await db.getUser(auction.leaderId);
     const levelInfo = db.calculateLevel(user.wins + 1, user.totalBids);
@@ -431,12 +437,15 @@ async function endAuction() {
     );
   } catch(e) {}
 
-  auction = null;
-
-  // Auto-start new vote session after 1 minute
-  setTimeout(() => {
-    if (!auction && !voteSession.active) startVoteSession();
-  }, 60000);
+  } catch(e) {
+    console.error('endAuction error:', e.message);
+  } finally {
+    auction = null;
+    // Auto-start new vote session after 1 minute
+    setTimeout(() => {
+      if (!auction && !voteSession.active) startVoteSession();
+    }, 60000);
+  }
 }
 
 // ============ WEBSOCKET ============
@@ -562,8 +571,13 @@ wss.on('connection', (ws) => {
     }
 
     if (type === 'VOTE') {
-      const result = await handleVote(id, msg.lotKey);
-      sendTo(ws, { type: 'VOTE_RESULT', ...result });
+      try {
+        const result = await handleVote(id, msg.lotKey);
+        sendTo(ws, { type: 'VOTE_RESULT', ...result });
+      } catch(e) {
+        console.error('VOTE error:', e.message);
+        sendTo(ws, { type: 'VOTE_RESULT', ok: false, error: 'Ошибка сервера, попробуй ещё раз' });
+      }
       return;
     }
 

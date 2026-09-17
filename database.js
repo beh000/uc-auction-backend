@@ -106,6 +106,13 @@ async function getUser(telegramId, name) {
   return user;
 }
 
+// Unlike getUser(), never creates a record — for admin operations that must
+// tell a real player apart from a typo'd/nonexistent telegramId.
+async function findUser(telegramId) {
+  const d = await connect();
+  return d.collection('users').findOne({ telegramId: String(telegramId) });
+}
+
 async function updateUser(telegramId, update) {
   const d = await connect();
   await d.collection('users').updateOne({ telegramId: String(telegramId) }, { $set: update });
@@ -266,7 +273,7 @@ function calculateLevel(wins, totalBids) {
 
 module.exports = {
   connect, getSettings, setSetting,
-  getUser, updateUser, incrementUser, placeBid, resetMyAuctionCoins,
+  getUser, findUser, updateUser, incrementUser, placeBid, resetMyAuctionCoins,
   getUserByReferral, getLeaderboard, getAllUsers,
   saveAuction, getAuctionHistory,
   createPromo, usePromo, listPromos, deletePromo,

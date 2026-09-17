@@ -507,7 +507,10 @@ wss.on('connection', (ws) => {
             referrals: user.referrals || 0
           }
         });
-      } catch(e) { console.error('JOIN error:', e.message); }
+      } catch(e) {
+        console.error('JOIN error:', e.message);
+        sendTo(ws, { type: 'ERROR', message: 'Ошибка сервера, попробуй перезайти' });
+      }
       return;
     }
 
@@ -566,7 +569,10 @@ wss.on('connection', (ws) => {
           leaderName: auction.leaderName, leaderId: auction.leaderId,
           timeLeft: auction.timeLeft
         });
-      } catch(e) { console.error('BID error:', e.message); }
+      } catch(e) {
+        console.error('BID error:', e.message);
+        sendTo(ws, { type: 'ERROR', message: 'Ошибка сервера, попробуй ещё раз' });
+      }
       return;
     }
 
@@ -696,7 +702,7 @@ app.post('/mark-withdrawn', async (req, res) => {
   const amount = parseInt(uc);
   if (!amount || amount <= 0) return res.status(400).json({ error: 'Неверное количество UC' });
 
-  const user = await db.getUser(String(telegramId));
+  const user = await db.findUser(String(telegramId));
   if (!user) return res.status(404).json({ error: 'Пользователь не найден' });
 
   const newPending = Math.max(0, user.ucPending - amount);

@@ -4,7 +4,11 @@ const cors = require('cors');
 const http = require('http');
 const https = require('https');
 const crypto = require('crypto');
+const fs = require('fs');
+const path = require('path');
 const db = require('./database');
+
+const CHANNEL_BANNER_PATH = path.join(__dirname, 'assets', 'channel-banner.jpg');
 
 const app = express();
 app.use(cors());
@@ -95,8 +99,10 @@ function tgSend(token, chatId, text, keyboard) {
 
 // Every channel post gets the "open bot" button — the old plain-text path
 // (vote start/won) never had one; only the auction-start message did.
-// Pass photoUrl to post as a photo with caption instead of plain text.
-function notifyChannel(text, photoUrl) {
+// Pass withPhoto to attach the local banner image as the post's photo.
+// The banner is uploaded directly (multipart), not linked by URL — Telegram
+// fetching a hotlinked URL was the previous "Content not viewable" failure.
+async function notifyChannel(text, withPhoto) {
   const channelId = process.env.CHANNEL_ID;
   const token = process.env.ADMIN_BOT_TOKEN;
   const botUsername = process.env.BOT_USERNAME || 'ucbid_uz_bot';
@@ -104,33 +110,22 @@ function notifyChannel(text, photoUrl) {
 
   const keyboard = [[{ text: '⚡ Открыть аукцион', url: `https://t.me/${botUsername}/auction` }]];
 
-  if (!photoUrl) { tgSend(token, channelId, text, keyboard); return; }
+  if (!withPhoto) { tgSend(token, channelId, text, keyboard); return; }
 
-  const body = JSON.stringify({
-    chat_id: channelId,
-    photo: photoUrl,
-    caption: text,
-    parse_mode: 'HTML',
-    reply_markup: { inline_keyboard: keyboard }
-  });
-  const options = {
-    hostname: 'api.telegram.org',
-    path: `/bot${token}/sendPhoto`,
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) }
-  };
-  const req = https.request(options, res => {
-    let d = ''; res.on('data', c => d += c);
-    res.on('end', () => {
-      try {
-        const r = JSON.parse(d);
-        // Fall back to a plain message if Telegram rejects the photo (e.g. bad URL)
-        if (!r.ok) { console.error('Channel photo notify error:', r.description); tgSend(token, channelId, text, keyboard); }
-      } catch(e) {}
-    });
-  });
-  req.on('error', e => { console.error('Channel photo error:', e.message); tgSend(token, channelId, text, keyboard); });
-  req.write(body); req.end();
+  try {
+    const form = new FormData();
+    form.append('chat_id', String(channelId));
+    form.append('caption', text);
+    form.append('parse_mode', 'HTML');
+    form.append('reply_markup', JSON.stringify({ inline_keyboard: keyboard }));
+    form.append('photo', new Blob([fs.readFileSync(CHANNEL_BANNER_PATH)]), 'banner.jpg');
+    const res = await fetch(`https://api.telegram.org/bot${token}/sendPhoto`, { method: 'POST', body: form });
+    const r = await res.json();
+    if (!r.ok) { console.error('Channel photo notify error:', r.description); tgSend(token, channelId, text, keyboard); }
+  } catch (e) {
+    console.error('Channel photo error:', e.message);
+    tgSend(token, channelId, text, keyboard);
+  }
 }
 
 function notifyUser(userId, text, keyboard) {
@@ -232,7 +227,8 @@ function startVoteSession() {
     `🗳 <b>Голосование за следующий аукцион!</b>\n\n` +
     `Выбери какой UC разыграть:\n` +
     Object.entries(lots).map(([k, l]) => `• ${l.prize}`).join('\n') +
-    `\n\nОткрой аукцион и проголосуй! Нужно ${settings.votesRequired || 10} голосов.`
+    `\n\nОткрой аукцион и проголосуй! Нужно ${settings.votesRequired || 10} голосов.`,
+    true
   );
 }
 
@@ -275,14 +271,16 @@ async function handleVote(telegramId, lotKey) {
     notifyChannel(
       `🏁 <b>${lots[winner[0]].prize} победил в голосовании!</b>\n\n` +
       `⏳ Аукцион начнётся через ${Math.floor((settings.auctionStartDelay || 300) / 60)} минут!\n` +
-      `Готовьте коины! 🪙`
+      `Готовьте коины! 🪙`,
+      true
     );
 
     // Notify 5 min warning if delay > 5 min
     if (delay > 5 * 60 * 1000) {
       setTimeout(() => {
         notifyChannel(
-          `⚡ <b>Аукцион на ${lots[winner[0]].prize} начнётся через 5 минут!</b>\n\nГотовьте коины! 🪙`
+          `⚡ <b>Аукцион на ${lots[winner[0]].prize} начнётся через 5 минут!</b>\n\nГотовьте коины! 🪙`,
+          true
         );
         broadcast({ type: 'AUCTION_SOON', prize: lots[winner[0]].prize, seconds: 300 });
       }, delay - 5 * 60 * 1000);
@@ -317,7 +315,8 @@ async function launchAuction(lotKey) {
     `🎁 Лот: <b>${lots[lotKey].prize}</b>\n` +
     `💰 Рыночная цена: ${lots[lotKey].marketPrice.toLocaleString('ru-RU')} сум\n` +
     `🪙 1 ставка = ${lots[lotKey].bidCoins || 1} коин(а) = ${(lots[lotKey].bidCoins||1) * (settings.coinCost||500)} сум\n\n` +
-    `👉 Участвуй прямо сейчас!`
+    `👉 Участвуй прямо сейчас!`,
+    true
   );
 }
 

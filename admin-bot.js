@@ -141,12 +141,15 @@ async function handleUpdate(update) {
 
     // Start auction manually
     if (data === 'start_auction') {
+      const s = await api('/settings?adminKey=' + ADMIN_KEY);
+      const lots = s.lots || {};
+      const icons = { '325': '💙', '660': '💎', '1800': '👑' };
+      const buttons = Object.entries(lots).map(([key, lot]) => ([{
+        text: `${icons[key] || '🎮'} ${lot.prize} — ${(lot.marketPrice || 0).toLocaleString('ru-RU')} сум`,
+        callback_data: `launch_${key}`
+      }]));
       await answerCb(cb.id, 'Выбери лот');
-      await send(chatId, `🎮 <b>Выбери лот:</b>`, [
-        [{ text: '💙 325 UC — 55,000 сум', callback_data: 'launch_325' }],
-        [{ text: '💎 660 UC — 96,000 сум', callback_data: 'launch_660' }],
-        [{ text: '👑 1800 UC — 245,000 сум', callback_data: 'launch_1800' }]
-      ]);
+      await send(chatId, `🎮 <b>Выбери лот:</b>`, buttons);
       return;
     }
 
@@ -233,8 +236,9 @@ async function handleUpdate(update) {
       `/users — игроки\n` +
       `/add [id] [кол-во] — коины\n` +
       `/set [ключ] [значение] — настройки\n` +
-      `/setlot [ключ] price [цена] — цена лота\n` +
+      `/setlot [ключ] price [цена] — цена лота аукциона\n` +
       `/setlot [ключ] coins [кол-во] — коины за ставку\n` +
+      `/setprice [uc60|uc325|uc660|uc1800] [цена] — цена прямой покупки UC\n` +
       `/promo [код] [коины] [использований] — создать промокод\n` +
       `/delpromo [код] — удалить промокод\n` +
       `/stop — остановить аукцион`,
@@ -324,6 +328,28 @@ async function handleUpdate(update) {
     } else {
       await send(chatId, '❌ Параметр должен быть price или coins');
     }
+    return;
+  }
+
+  if (text.startsWith('/setprice ')) {
+    const parts = text.split(' ');
+    const item = parts[1];
+    const value = parseInt(parts[2]);
+    const allowedItems = ['uc60', 'uc325', 'uc660', 'uc1800'];
+    if (!allowedItems.includes(item) || isNaN(value) || value <= 0) {
+      await send(chatId,
+        '❌ Формат: /setprice [uc60|uc325|uc660|uc1800] [цена]\n\n' +
+        'Это цена прямой покупки UC (в обход аукциона) — отдельная от цен лотов аукциона.\n' +
+        'Пример: /setprice uc660 120000'
+      );
+      return;
+    }
+    const s = await api('/settings?adminKey=' + ADMIN_KEY);
+    const direct = s.directPrices || {};
+    if (!direct[item]) { await send(chatId, '❌ Позиция не найдена'); return; }
+    direct[item].price = value;
+    const r = await api('/update-setting', 'POST', { key: 'directPrices', value: direct, adminKey: ADMIN_KEY });
+    await send(chatId, r.success ? `✅ ${direct[item].uc} UC (прямая покупка): цена = ${value.toLocaleString('ru-RU')} сум` : '❌ Ошибка');
     return;
   }
 

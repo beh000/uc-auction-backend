@@ -1,24 +1,55 @@
 const https = require('https');
+const http = require('http');
 const db = require('./database');
 
 const USER_BOT_TOKEN = process.env.USER_BOT_TOKEN;
 const PAYMENT_CARD = process.env.PAYMENT_CARD || 'Номер не задан';
 const PAYMENT_NAME = process.env.PAYMENT_NAME || 'UC Auction';
-const BOT_USERNAME = process.env.BOT_USERNAME || 'UCBidbot';
+const BOT_USERNAME = process.env.BOT_USERNAME || 'ucbid_uz_bot';
 
-const PACKS = [
-  { id: 'p10',  count: 10,  price: 5000  },
-  { id: 'p30',  count: 30,  price: 15000 },
-  { id: 'p60',  count: 60,  price: 30000 },
-  { id: 'p100', count: 100, price: 50000 },
-];
+// Pack sizes are fixed; the price per coin always tracks the live coinCost
+// setting instead of being baked in, so a /set coinCost change is reflected
+// immediately instead of silently going stale.
+const PACK_SIZES = [10, 30, 60, 100];
 
-const UC_ITEMS = [
+// Fallback only — used if the backend's own /prices call fails, so the bot
+// still works. The real, currently-configured prices always come from there,
+// since these used to be the only prices anywhere and admin edits never
+// reached them.
+const FALLBACK_UC_ITEMS = [
   { id: 'uc60',   uc: 60,   price: 13000  },
   { id: 'uc325',  uc: 325,  price: 58000  },
   { id: 'uc660',  uc: 660,  price: 115000 },
   { id: 'uc1800', uc: 1800, price: 300000 },
 ];
+
+function getJson(path) {
+  return new Promise((resolve) => {
+    const req = http.request({
+      hostname: '127.0.0.1', port: process.env.PORT || 3000,
+      path, method: 'GET'
+    }, res => {
+      let d = ''; res.on('data', c => d += c);
+      res.on('end', () => { try { resolve(JSON.parse(d)); } catch(e) { resolve(null); } });
+    });
+    req.on('error', () => resolve(null));
+    req.end();
+  });
+}
+
+// Always reflects whatever the admin last set via /setlot and /setprice —
+// never hardcoded, so prices shown here can't drift from the real config.
+async function getPrices() {
+  const prices = await getJson('/prices');
+  const direct = prices?.direct
+    ? Object.entries(prices.direct).map(([id, item]) => ({ id, uc: item.uc, price: item.price }))
+    : FALLBACK_UC_ITEMS;
+  const lots = prices?.lots || {};
+  const maxDiscount = prices?.maxDiscount || 15000;
+  const coinCost = prices?.coinCost || 500;
+  const packs = PACK_SIZES.map(count => ({ id: 'p' + count, count, price: count * coinCost }));
+  return { direct, lots, maxDiscount, coinCost, packs };
+}
 
 const sessions = {};
 const winnerSessions = {};
@@ -82,21 +113,19 @@ async function handleUpdate(update) {
     await tgRequest('answerCallbackQuery', { callback_query_id: cb.id });
 
     if (data === 'buy_coins') {
-      await send(chatId,
-        `🪙 <b>Купить коины</b>\n\n1 коин = ${process.env.COIN_COST || 500} сум\nВыбери пакет:`,
-        [
-          [{ text: '10 коинов — 5,000 сум', callback_data: 'pack_p10' }],
-          [{ text: '30 коинов — 15,000 сум ⭐', callback_data: 'pack_p30' }],
-          [{ text: '60 коинов — 30,000 сум', callback_data: 'pack_p60' }],
-          [{ text: '100 коинов — 50,000 сум', callback_data: 'pack_p100' }],
-          [{ text: '⬅️ Назад', callback_data: 'back' }]
-        ]
-      );
+      const { packs, coinCost } = await getPrices();
+      const buttons = packs.map((p, i) => ([{
+        text: `${p.count} коинов — ${p.price.toLocaleString('ru-RU')} сум${i === 1 ? ' ⭐' : ''}`,
+        callback_data: `pack_${p.id}`
+      }]));
+      buttons.push([{ text: '⬅️ Назад', callback_data: 'back' }]);
+      await send(chatId, `🪙 <b>Купить коины</b>\n\n1 коин = ${coinCost} сум\nВыбери пакет:`, buttons);
       return;
     }
 
     if (data.startsWith('pack_')) {
-      const pack = PACKS.find(p => p.id === data.replace('pack_', ''));
+      const { packs } = await getPrices();
+      const pack = packs.find(p => p.id === data.replace('pack_', ''));
       if (!pack) return;
       sessions[userId] = { step: 'waiting_coins_screenshot', pack, name };
       // Send payment details immediately
@@ -114,21 +143,36 @@ async function handleUpdate(update) {
     }
 
     if (data === 'buy_uc') {
-      await send(chatId, `💎 <b>Прямая покупка UC</b>\n\nВыбери количество:`, [
-        [{ text: '60 UC — 13,000 сум', callback_data: 'uc_uc60' }],
-        [{ text: '325 UC — 58,000 сум', callback_data: 'uc_uc325' }],
-        [{ text: '660 UC — 115,000 сум', callback_data: 'uc_uc660' }],
-        [{ text: '1800 UC — 300,000 сум', callback_data: 'uc_uc1800' }],
-        [{ text: '⬅️ Назад', callback_data: 'back' }]
-      ]);
+      const { direct } = await getPrices();
+      const buttons = direct.map(item => ([{
+        text: `${item.uc} UC — ${item.price.toLocaleString('ru-RU')} сум`,
+        callback_data: `uc_${item.id}`
+      }]));
+      buttons.push([{ text: '⬅️ Назад', callback_data: 'back' }]);
+      await send(chatId, `💎 <b>Прямая покупка UC</b>\n\nВыбери количество:`, buttons);
       return;
     }
 
     if (data.startsWith('uc_')) {
-      const item = UC_ITEMS.find(i => i.id === data.replace('uc_', ''));
+      const { direct } = await getPrices();
+      const item = direct.find(i => i.id === data.replace('uc_', ''));
       if (!item) return;
       sessions[userId] = { step: 'waiting_pubg_id_uc', uc: item.uc, price: item.price, name };
       await send(chatId, `💎 <b>${item.uc} UC — ${item.price.toLocaleString('ru-RU')} сум</b>\n\nВведи свой <b>PUBG ID</b>:`);
+      return;
+    }
+
+    // Consolation-discount purchase — price is the lot's market price minus
+    // maxDiscount, actually applied here (the old flow only showed the
+    // discounted number in the button text but then charged full price).
+    if (data.startsWith('discount_')) {
+      const lotKey = data.replace('discount_', '');
+      const { lots, maxDiscount } = await getPrices();
+      const lot = lots[lotKey];
+      if (!lot) return;
+      const price = Math.max(0, (lot.marketPrice || 0) - maxDiscount);
+      sessions[userId] = { step: 'waiting_pubg_id_uc', uc: lot.uc, price, name };
+      await send(chatId, `🎁 <b>${lot.uc} UC — ${price.toLocaleString('ru-RU')} сум (со скидкой)</b>\n\nВведи свой <b>PUBG ID</b>:`);
       return;
     }
 
@@ -198,7 +242,7 @@ async function handleUpdate(update) {
           const req = http.request({
             hostname: '127.0.0.1', port: process.env.PORT || 3000,
             path: '/use-referral', method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body), 'X-Internal-Key': process.env.INTERNAL_KEY || '' }
+            headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body), 'X-Internal-Key': process.env.ADMIN_KEY || '' }
           }, res => {
             let d = ''; res.on('data', c => d += c);
             res.on('end', async () => {
@@ -217,14 +261,15 @@ async function handleUpdate(update) {
     }
 
     if (param === 'discount') {
+      const { lots, maxDiscount } = await getPrices();
+      const buttons = Object.entries(lots).map(([key, lot]) => ([{
+        text: `${lot.prize} — ${Math.max(0, (lot.marketPrice||0) - maxDiscount).toLocaleString('ru-RU')} сум`,
+        callback_data: `discount_${key}`
+      }]));
       await send(chatId,
-        `🎁 <b>Скидка 15,000 сум на UC!</b>\n\n` +
+        `🎁 <b>Скидка ${maxDiscount.toLocaleString('ru-RU')} сум на UC!</b>\n\n` +
         `Выбери UC со скидкой:`,
-        [
-          [{ text: `325 UC — ${(55000-15000).toLocaleString('ru-RU')} сум`, callback_data: 'uc_uc325' }],
-          [{ text: `660 UC — ${(96000-15000).toLocaleString('ru-RU')} сум`, callback_data: 'uc_uc660' }],
-          [{ text: `1800 UC — ${(245000-15000).toLocaleString('ru-RU')} сум`, callback_data: 'uc_uc1800' }],
-        ]
+        buttons
       );
       return;
     }
@@ -241,7 +286,7 @@ async function handleUpdate(update) {
       const req = http.request({
         hostname: '127.0.0.1', port: process.env.PORT || 3000,
         path: '/use-promo', method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body), 'X-Internal-Key': process.env.INTERNAL_KEY || '' }
+        headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body), 'X-Internal-Key': process.env.ADMIN_KEY || '' }
       }, res => {
         let d = ''; res.on('data', c => d += c);
         res.on('end', async () => {

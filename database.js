@@ -34,6 +34,17 @@ async function connect() {
       '325':  { uc: 325,  prize: '325 UC',  marketPrice: 55000,  bidCoins: 1 },
       '660':  { uc: 660,  prize: '660 UC',  marketPrice: 96000,  bidCoins: 2 },
       '1800': { uc: 1800, prize: '1800 UC', marketPrice: 245000, bidCoins: 4 }
+    }},
+    // Prices for buying UC directly (bypassing the auction) — a separate
+    // catalog from `lots` above (auction reference prices) on purpose, since
+    // direct purchase is intentionally priced higher. Previously hardcoded
+    // in three different places (both bots + the frontend shop) with no way
+    // for the admin to actually change them.
+    { key: 'directPrices', value: {
+      uc60:   { uc: 60,   price: 13000  },
+      uc325:  { uc: 325,  price: 58000  },
+      uc660:  { uc: 660,  price: 115000 },
+      uc1800: { uc: 1800, price: 300000 }
     }}
   ];
   for (const s of settings) {

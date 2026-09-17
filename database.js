@@ -12,13 +12,22 @@ async function connect() {
   db = client.db('ucauction');
   console.log('MongoDB connected');
 
-  // Create indexes
-  await db.collection('users').createIndex({ telegramId: 1 }, { unique: true });
-  await db.collection('users').createIndex({ referralCode: 1 }, { unique: true, sparse: true });
-  await db.collection('auctions').createIndex({ startedAt: -1 });
-  await db.collection('promoCodes').createIndex({ code: 1 }, { unique: true });
-  await db.collection('votes').createIndex({ telegramId: 1, auctionId: 1 }, { unique: true });
-  await db.collection('settings').createIndex({ key: 1 }, { unique: true });
+  // Create indexes — best-effort. A transient issue here (e.g. low disk
+  // headroom, which index builds are more sensitive to than plain writes)
+  // must not skip the settings seeding below: it previously did, silently
+  // leaving `lots`/`directPrices` unset in the DB and every admin lot/price
+  // menu empty, even though the auction itself kept working off in-code
+  // fallback defaults.
+  try {
+    await db.collection('users').createIndex({ telegramId: 1 }, { unique: true });
+    await db.collection('users').createIndex({ referralCode: 1 }, { unique: true, sparse: true });
+    await db.collection('auctions').createIndex({ startedAt: -1 });
+    await db.collection('promoCodes').createIndex({ code: 1 }, { unique: true });
+    await db.collection('votes').createIndex({ telegramId: 1, auctionId: 1 }, { unique: true });
+    await db.collection('settings').createIndex({ key: 1 }, { unique: true });
+  } catch (e) {
+    console.error('Index creation failed, continuing without them:', e.message);
+  }
 
   // Init default settings
   const settings = [
@@ -48,11 +57,15 @@ async function connect() {
     }}
   ];
   for (const s of settings) {
-    await db.collection('settings').updateOne(
-      { key: s.key },
-      { $setOnInsert: s },
-      { upsert: true }
-    );
+    try {
+      await db.collection('settings').updateOne(
+        { key: s.key },
+        { $setOnInsert: s },
+        { upsert: true }
+      );
+    } catch (e) {
+      console.error(`Failed to seed setting "${s.key}":`, e.message);
+    }
   }
   return db;
 }

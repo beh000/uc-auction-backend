@@ -126,9 +126,19 @@ async function findUser(telegramId) {
   return d.collection('users').findOne({ telegramId: String(telegramId) });
 }
 
+// Callers pass either plain fields (wrapped in $set) or a mix that also
+// includes raw operators like $push/$inc — nesting those inside $set's
+// document is rejected by MongoDB ("$ prefixed field ... not allowed"),
+// which previously made endAuction() throw before announcing the winner.
 async function updateUser(telegramId, update) {
   const d = await connect();
-  await d.collection('users').updateOne({ telegramId: String(telegramId) }, { $set: update });
+  const { $push, $inc, $unset, ...fields } = update;
+  const ops = {};
+  if (Object.keys(fields).length) ops.$set = fields;
+  if ($push) ops.$push = $push;
+  if ($inc) ops.$inc = $inc;
+  if ($unset) ops.$unset = $unset;
+  await d.collection('users').updateOne({ telegramId: String(telegramId) }, ops);
 }
 
 async function incrementUser(telegramId, inc) {

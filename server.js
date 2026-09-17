@@ -600,6 +600,20 @@ app.get('/', (req, res) => res.json({
 }));
 
 app.get('/auction', (req, res) => res.json(getAuctionState()));
+// Public pricing info — no admin key needed, it's just prices — so the bots
+// and the Mini App can always show what the admin currently has configured
+// instead of a value baked in at build time.
+app.get('/prices', (req, res) => res.json({
+  lots: getLots(),
+  direct: settings.directPrices || {
+    uc60:   { uc: 60,   price: 13000  },
+    uc325:  { uc: 325,  price: 58000  },
+    uc660:  { uc: 660,  price: 115000 },
+    uc1800: { uc: 1800, price: 300000 }
+  },
+  maxDiscount: settings.maxDiscount || 15000,
+  coinCost: settings.coinCost || 500
+}));
 app.get('/leaderboard', (req, res) => res.json(leaderboard));
 app.get('/history', async (req, res) => res.json(await db.getAuctionHistory()));
 app.get('/settings', async (req, res) => {
@@ -703,10 +717,12 @@ app.post('/create-promo', async (req, res) => {
 });
 
 // Internal-only: called by user-bot.js on behalf of a Telegram-verified chat,
-// never by the Mini App directly — so a shared internal key (not the public
-// Mini App) gates it, closing off direct internet calls with an arbitrary telegramId.
+// never by the Mini App directly. Reuses ADMIN_KEY (already required for every
+// other admin endpoint) rather than a new env var, so there's nothing extra to
+// remember to configure on deploy — it still closes off direct internet calls
+// with an arbitrary telegramId, since only server-side code has ADMIN_KEY.
 function requireInternalKey(req, res) {
-  if (!process.env.INTERNAL_KEY || req.headers['x-internal-key'] !== process.env.INTERNAL_KEY) {
+  if (!process.env.ADMIN_KEY || req.headers['x-internal-key'] !== process.env.ADMIN_KEY) {
     res.status(403).json({ error: 'Нет доступа' });
     return false;
   }

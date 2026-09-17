@@ -170,6 +170,19 @@ async function resetMyAuctionCoins() {
   );
 }
 
+// Atomic claim, same reasoning as usePromo above: two /start ref_x hits
+// (e.g. opened on two devices) could otherwise both read referredBy as unset
+// and both write, paying the referral bonus twice for one signup.
+async function claimReferral(telegramId, referralCode) {
+  const d = await connect();
+  const result = await d.collection('users').findOneAndUpdate(
+    { telegramId: String(telegramId), referredBy: null },
+    { $set: { referredBy: referralCode } },
+    { returnDocument: 'after' }
+  );
+  return result && Object.prototype.hasOwnProperty.call(result, 'value') ? result.value : result;
+}
+
 async function getUserByReferral(code) {
   const d = await connect();
   return d.collection('users').findOne({ referralCode: code });
@@ -222,19 +235,35 @@ async function createPromo(code, coins, maxUses) {
   });
 }
 
+// Atomic check-and-claim: the old version read the promo, checked usedBy/
+// usedCount in JS, then wrote — two requests for the same code arriving close
+// together (a double-tap, or a deliberate script once real coins are on the
+// line) could both pass the check before either write landed, and both would
+// get paid. Folding the same conditions into the update's filter makes only
+// one concurrent claim possible; the loser gets a normal "already used" error.
 async function usePromo(code, telegramId) {
   const d = await connect();
-  const promo = await d.collection('promoCodes').findOne({ code: code.toUpperCase(), active: true });
-  if (!promo) return { ok: false, error: 'Промокод не найден или истёк' };
-  if (promo.usedBy.includes(String(telegramId))) return { ok: false, error: 'Ты уже использовал этот промокод' };
-  if (promo.usedCount >= promo.maxUses) return { ok: false, error: 'Промокод уже использован максимальное количество раз' };
-
-  await d.collection('promoCodes').updateOne(
-    { code: code.toUpperCase() },
-    { $inc: { usedCount: 1 }, $push: { usedBy: String(telegramId) } }
+  const upperCode = code.toUpperCase();
+  const id = String(telegramId);
+  const claimed = await d.collection('promoCodes').findOneAndUpdate(
+    {
+      code: upperCode,
+      active: true,
+      usedBy: { $ne: id },
+      $expr: { $lt: ['$usedCount', '$maxUses'] }
+    },
+    { $inc: { usedCount: 1 }, $push: { usedBy: id } },
+    { returnDocument: 'after' }
   );
-  if (promo.usedCount + 1 >= promo.maxUses) {
-    await d.collection('promoCodes').updateOne({ code: code.toUpperCase() }, { $set: { active: false } });
+  const promo = claimed && Object.prototype.hasOwnProperty.call(claimed, 'value') ? claimed.value : claimed;
+  if (!promo) {
+    const existing = await d.collection('promoCodes').findOne({ code: upperCode });
+    if (!existing || !existing.active) return { ok: false, error: 'Промокод не найден или истёк' };
+    if (existing.usedBy.includes(id)) return { ok: false, error: 'Ты уже использовал этот промокод' };
+    return { ok: false, error: 'Промокод уже использован максимальное количество раз' };
+  }
+  if (promo.usedCount >= promo.maxUses) {
+    await d.collection('promoCodes').updateOne({ code: upperCode }, { $set: { active: false } });
   }
   return { ok: true, coins: promo.coins };
 }
@@ -297,7 +326,7 @@ function calculateLevel(wins, totalBids) {
 module.exports = {
   connect, getSettings, setSetting,
   getUser, findUser, updateUser, incrementUser, placeBid, resetMyAuctionCoins,
-  getUserByReferral, getLeaderboard, getAllUsers,
+  getUserByReferral, claimReferral, getLeaderboard, getAllUsers,
   saveAuction, getAuctionHistory,
   createPromo, usePromo, listPromos, deletePromo,
   addVote, getVotes, clearVotes,

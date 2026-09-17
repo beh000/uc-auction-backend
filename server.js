@@ -785,16 +785,19 @@ app.post('/use-referral', async (req, res) => {
   const { telegramId, referralCode } = req.body;
   if (!telegramId || !referralCode) return res.status(400).json({ error: 'Обязательные поля' });
 
-  const user = await db.getUser(String(telegramId));
-  if (user.referredBy) return res.status(400).json({ error: 'Реферал уже использован' });
+  await db.getUser(String(telegramId)); // ensure the user record exists before claiming
 
   const referrer = await db.getUserByReferral(referralCode);
   if (!referrer) return res.status(404).json({ error: 'Реферальный код не найден' });
   if (referrer.telegramId === String(telegramId)) return res.status(400).json({ error: 'Нельзя использовать свой код' });
 
+  // Atomic claim (referredBy: null in the filter) — two concurrent calls for
+  // the same user can't both win and both get paid; see claimReferral().
+  const claimed = await db.claimReferral(telegramId, referralCode);
+  if (!claimed) return res.status(400).json({ error: 'Реферал уже использован' });
+
   // Give bonus to both
   const bonus = 5; // coins
-  await db.updateUser(String(telegramId), { referredBy: referralCode });
   await db.incrementUser(String(telegramId), { coins: bonus });
   await db.incrementUser(referrer.telegramId, { coins: bonus, referrals: 1 });
 

@@ -220,7 +220,8 @@ function startVoteSession() {
     type: 'VOTE_STARTED',
     voteId: voteSession.id,
     lots: getLotButtons(),
-    required: settings.votesRequired || 10
+    required: settings.votesRequired || 10,
+    startDelay: settings.auctionStartDelay ?? 300
   });
 
   notifyChannel(
@@ -257,20 +258,24 @@ async function handleVote(telegramId, lotKey) {
   // Check if any lot reached required votes
   const winner = Object.entries(voteSession.votes).find(([k, v]) => v >= required);
   if (winner && !voteSession.startCountdown) {
-    const delay = (settings.auctionStartDelay || 300) * 1000;
+    // ?? (not ||) — an admin can deliberately set this to 0 (start right after
+    // the vote) via the settings menu, and 0 is falsy so || would silently
+    // revert it to 300.
+    const startDelay = settings.auctionStartDelay ?? 300;
+    const delay = startDelay * 1000;
     voteSession.countdownEnd = Date.now() + delay;
 
     broadcast({
       type: 'VOTE_WON',
       lotKey: winner[0],
       prize: lots[winner[0]].prize,
-      startsIn: settings.auctionStartDelay || 300,
+      startsIn: startDelay,
       countdownEnd: voteSession.countdownEnd
     });
 
     notifyChannel(
       `🏁 <b>${lots[winner[0]].prize} победил в голосовании!</b>\n\n` +
-      `⏳ Аукцион начнётся через ${Math.floor((settings.auctionStartDelay || 300) / 60)} минут!\n` +
+      `⏳ Аукцион начнётся через ${Math.floor(startDelay / 60)} минут!\n` +
       `Готовьте коины! 🪙`,
       true
     );
@@ -328,7 +333,9 @@ function startAuctionTimer() {
     auction.timeLeft = Math.max(0, auction.timeLeft - 1);
     broadcast({ type: 'TIMER', timeLeft: auction.timeLeft });
     if (auction.timeLeft <= 0) {
-      const minBids = settings.minBids || 20;
+      // ?? — an admin can deliberately set this to 0 (end on time alone, no
+      // minimum bid count) via the settings menu; || would silently undo that.
+      const minBids = settings.minBids ?? 20;
       if (auction.bidCount >= minBids) {
         await endAuction();
       } else {
@@ -623,7 +630,9 @@ app.get('/prices', (req, res) => res.json({
     uc660:  { uc: 660,  price: 115000 },
     uc1800: { uc: 1800, price: 300000 }
   },
-  maxDiscount: settings.maxDiscount || 15000,
+  // ?? — an admin can deliberately turn the consolation discount off (0),
+  // which || would silently revert to 15000.
+  maxDiscount: settings.maxDiscount ?? 15000,
   coinCost: settings.coinCost || 500,
   botUsername: process.env.BOT_USERNAME || 'ucbid_uz_bot'
 }));

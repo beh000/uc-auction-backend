@@ -45,7 +45,8 @@ async function getPrices() {
     ? Object.entries(prices.direct).map(([id, item]) => ({ id, uc: item.uc, price: item.price }))
     : FALLBACK_UC_ITEMS;
   const lots = prices?.lots || {};
-  const maxDiscount = prices?.maxDiscount || 15000;
+  // ?? — 0 is a valid admin choice (discount disabled); || would erase it.
+  const maxDiscount = prices?.maxDiscount ?? 15000;
   const coinCost = prices?.coinCost || 500;
   const packs = PACK_SIZES.map(count => ({ id: 'p' + count, count, price: count * coinCost }));
   return { direct, lots, maxDiscount, coinCost, packs };
@@ -211,14 +212,15 @@ async function handleUpdate(update) {
     }
 
     if (data === 'howto') {
+      const { coinCost, maxDiscount } = await getPrices();
       await send(chatId,
         `❓ <b>Как играть?</b>\n\n` +
-        `1️⃣ Купи коины (1 коин = 500 сум)\n\n` +
+        `1️⃣ Купи коины (1 коин = ${coinCost} сум)\n\n` +
         `2️⃣ Проголосуй за лот в аукционе\n\n` +
         `3️⃣ Когда наберётся нужно голосов — аукцион стартует!\n\n` +
-        `4️⃣ Каждая ставка (1 коин):\n   • Поднимает цену на 100 сум\n   • Сбрасывает таймер\n\n` +
+        `4️⃣ Каждая ставка:\n   • Поднимает цену\n   • Сбрасывает таймер\n\n` +
         `5️⃣ Последний поставивший — победитель!\n\n` +
-        `🎁 Проиграл? Скидка 15,000 сум на UC!`,
+        (maxDiscount > 0 ? `🎁 Проиграл? Скидка ${maxDiscount.toLocaleString('ru-RU')} сум на UC!` : ''),
         [[{ text: '🪙 Купить коины', callback_data: 'buy_coins' }, { text: '⬅️ Назад', callback_data: 'back' }]]
       );
       return;

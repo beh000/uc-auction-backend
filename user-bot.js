@@ -83,6 +83,35 @@ function sendPhoto(chatId, fileId, caption) {
   return tgRequest('sendPhoto', { chat_id: chatId, photo: fileId, caption, parse_mode: 'HTML' });
 }
 
+// Shared by the "Купить коины" button and the buy_<count> deep link the Mini
+// App opens — previously only the button path sent payment details; opening
+// the bot from the Mini App just showed the generic menu with no card number
+// or screenshot prompt at all.
+async function sendCoinPaymentDetails(chatId, userId, pack, name) {
+  sessions[userId] = { step: 'waiting_coins_screenshot', pack, name };
+  await send(chatId,
+    `🪙 <b>${pack.count} коинов — ${pack.price.toLocaleString('ru-RU')} сум</b>\n\n` +
+    `💳 <b>Реквизиты для оплаты:</b>\n` +
+    `Карта: <code>${PAYMENT_CARD}</code>\n` +
+    `Получатель: ${PAYMENT_NAME}\n\n` +
+    `💰 Сумма к переводу: <b>${pack.price.toLocaleString('ru-RU')} сум</b>\n\n` +
+    `📸 После перевода отправь скриншот чека прямо сюда.\n` +
+    `⏱ Коины зачислим в течение 5-15 минут.`,
+    [[{ text: '❌ Отмена', callback_data: 'cancel' }]]
+  );
+}
+
+// Shared by the "Купить UC напрямую" button and the buy_uc deep link.
+async function sendBuyUcMenu(chatId) {
+  const { direct } = await getPrices();
+  const buttons = direct.map(item => ([{
+    text: `${item.uc} UC — ${item.price.toLocaleString('ru-RU')} сум`,
+    callback_data: `uc_${item.id}`
+  }]));
+  buttons.push([{ text: '⬅️ Назад', callback_data: 'back' }]);
+  await send(chatId, `💎 <b>Прямая покупка UC</b>\n\nВыбери количество:`, buttons);
+}
+
 async function showMenu(chatId, name) {
   let user;
   try { user = await db.getUser(String(chatId), name); } catch(e) { user = null; }
@@ -127,29 +156,12 @@ async function handleUpdate(update) {
       const { packs } = await getPrices();
       const pack = packs.find(p => p.id === data.replace('pack_', ''));
       if (!pack) return;
-      sessions[userId] = { step: 'waiting_coins_screenshot', pack, name };
-      // Send payment details immediately
-      await send(chatId,
-        `🪙 <b>${pack.count} коинов — ${pack.price.toLocaleString('ru-RU')} сум</b>\n\n` +
-        `💳 <b>Реквизиты для оплаты:</b>\n` +
-        `Карта: <code>${PAYMENT_CARD}</code>\n` +
-        `Получатель: ${PAYMENT_NAME}\n\n` +
-        `💰 Сумма к переводу: <b>${pack.price.toLocaleString('ru-RU')} сум</b>\n\n` +
-        `📸 После перевода отправь скриншот чека прямо сюда.\n` +
-        `⏱ Коины зачислим в течение 5-15 минут.`,
-        [[{ text: '❌ Отмена', callback_data: 'cancel' }]]
-      );
+      await sendCoinPaymentDetails(chatId, userId, pack, name);
       return;
     }
 
     if (data === 'buy_uc') {
-      const { direct } = await getPrices();
-      const buttons = direct.map(item => ([{
-        text: `${item.uc} UC — ${item.price.toLocaleString('ru-RU')} сум`,
-        callback_data: `uc_${item.id}`
-      }]));
-      buttons.push([{ text: '⬅️ Назад', callback_data: 'back' }]);
-      await send(chatId, `💎 <b>Прямая покупка UC</b>\n\nВыбери количество:`, buttons);
+      await sendBuyUcMenu(chatId);
       return;
     }
 
@@ -258,6 +270,22 @@ async function handleUpdate(update) {
           req.write(body); req.end();
         }
       } catch(e) {}
+    }
+
+    // Opened from the Mini App's "Купить коины" button — used to just show
+    // the generic menu with the count silently dropped, so the player had to
+    // manually reselect the package and never got the card number at all.
+    if (param && param.startsWith('buy_') && param !== 'buy_uc') {
+      const count = parseInt(param.replace('buy_', ''));
+      const { packs } = await getPrices();
+      const pack = packs.find(p => p.count === count);
+      if (pack) { await sendCoinPaymentDetails(chatId, userId, pack, name); return; }
+    }
+
+    // Opened from the Mini App's "Купить UC напрямую" cards.
+    if (param === 'buy_uc') {
+      await sendBuyUcMenu(chatId);
+      return;
     }
 
     if (param === 'discount') {

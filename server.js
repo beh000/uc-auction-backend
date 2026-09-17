@@ -133,10 +133,6 @@ function notifyChannel(text, photoUrl) {
   req.write(body); req.end();
 }
 
-function lotIcon(uc) {
-  return uc >= 1800 ? 'https://i.imgur.com/crown.png' : uc >= 660 ? 'https://i.imgur.com/diamond.png' : 'https://i.imgur.com/coin.png';
-}
-
 function notifyUser(userId, text, keyboard) {
   tgSend(process.env.USER_BOT_TOKEN, userId, text, keyboard);
 }
@@ -279,16 +275,14 @@ async function handleVote(telegramId, lotKey) {
     notifyChannel(
       `🏁 <b>${lots[winner[0]].prize} победил в голосовании!</b>\n\n` +
       `⏳ Аукцион начнётся через ${Math.floor((settings.auctionStartDelay || 300) / 60)} минут!\n` +
-      `Готовьте коины! 🪙`,
-      lotIcon(lots[winner[0]].uc)
+      `Готовьте коины! 🪙`
     );
 
     // Notify 5 min warning if delay > 5 min
     if (delay > 5 * 60 * 1000) {
       setTimeout(() => {
         notifyChannel(
-          `⚡ <b>Аукцион на ${lots[winner[0]].prize} начнётся через 5 минут!</b>\n\nГотовьте коины! 🪙`,
-          lotIcon(lots[winner[0]].uc)
+          `⚡ <b>Аукцион на ${lots[winner[0]].prize} начнётся через 5 минут!</b>\n\nГотовьте коины! 🪙`
         );
         broadcast({ type: 'AUCTION_SOON', prize: lots[winner[0]].prize, seconds: 300 });
       }, delay - 5 * 60 * 1000);
@@ -323,8 +317,7 @@ async function launchAuction(lotKey) {
     `🎁 Лот: <b>${lots[lotKey].prize}</b>\n` +
     `💰 Рыночная цена: ${lots[lotKey].marketPrice.toLocaleString('ru-RU')} сум\n` +
     `🪙 1 ставка = ${lots[lotKey].bidCoins || 1} коин(а) = ${(lots[lotKey].bidCoins||1) * (settings.coinCost||500)} сум\n\n` +
-    `👉 Участвуй прямо сейчас!`,
-    lotIcon(lots[lotKey].uc)
+    `👉 Участвуй прямо сейчас!`
   );
 }
 

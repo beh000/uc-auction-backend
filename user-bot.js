@@ -5,7 +5,7 @@ const db = require('./database');
 const USER_BOT_TOKEN = process.env.USER_BOT_TOKEN;
 const PAYMENT_CARD = process.env.PAYMENT_CARD || 'Номер не задан';
 const PAYMENT_NAME = process.env.PAYMENT_NAME || 'UC Auction';
-const BOT_USERNAME = process.env.BOT_USERNAME || 'UCBidbot';
+const BOT_USERNAME = process.env.BOT_USERNAME || 'ucbid_uz_bot';
 
 // Pack sizes are fixed; the price per coin always tracks the live coinCost
 // setting instead of being baked in, so a /set coinCost change is reflected

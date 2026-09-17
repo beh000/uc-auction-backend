@@ -93,22 +93,23 @@ function tgSend(token, chatId, text, keyboard) {
 }
 
 
-function notifyChannelWithPhoto(text, lot) {
+// Every channel post gets the "open bot" button — the old plain-text path
+// (vote start/won) never had one; only the auction-start message did.
+// Pass photoUrl to post as a photo with caption instead of plain text.
+function notifyChannel(text, photoUrl) {
   const channelId = process.env.CHANNEL_ID;
   const token = process.env.ADMIN_BOT_TOKEN;
-  const botUsername = process.env.BOT_USERNAME || 'UCBidbot';
+  const botUsername = process.env.BOT_USERNAME || 'ucbid_uz_bot';
   if (!channelId || !token) return;
 
-  // UC icon based on amount
-  const icon = lot.uc >= 1800 ? 'https://i.imgur.com/crown.png' : lot.uc >= 660 ? 'https://i.imgur.com/diamond.png' : 'https://i.imgur.com/coin.png';
+  const keyboard = [[{ text: '⚡ Открыть аукцион', url: `https://t.me/${botUsername}/auction` }]];
 
-  const caption = text + `\n\n🔗 <a href="https://t.me/${botUsername}/auction">Открыть аукцион</a>`;
-  const keyboard = [[{ text: '⚡ Участвовать', url: `https://t.me/${botUsername}/auction` }]];
+  if (!photoUrl) { tgSend(token, channelId, text, keyboard); return; }
 
   const body = JSON.stringify({
     chat_id: channelId,
-    photo: icon,
-    caption,
+    photo: photoUrl,
+    caption: text,
     parse_mode: 'HTML',
     reply_markup: { inline_keyboard: keyboard }
   });
@@ -124,19 +125,16 @@ function notifyChannelWithPhoto(text, lot) {
       try {
         const r = JSON.parse(d);
         // Fall back to a plain message if Telegram rejects the photo (e.g. bad URL)
-        if (!r.ok) { console.error('Channel photo notify error:', r.description); tgSend(token, channelId, caption, keyboard); }
+        if (!r.ok) { console.error('Channel photo notify error:', r.description); tgSend(token, channelId, text, keyboard); }
       } catch(e) {}
     });
   });
-  req.on('error', e => { console.error('Channel photo error:', e.message); tgSend(token, channelId, caption, keyboard); });
+  req.on('error', e => { console.error('Channel photo error:', e.message); tgSend(token, channelId, text, keyboard); });
   req.write(body); req.end();
 }
 
-function notifyChannel(text) {
-  const channelId = process.env.CHANNEL_ID;
-  const token = process.env.ADMIN_BOT_TOKEN;
-  if (!channelId || !token) return;
-  tgSend(token, channelId, text);
+function lotIcon(uc) {
+  return uc >= 1800 ? 'https://i.imgur.com/crown.png' : uc >= 660 ? 'https://i.imgur.com/diamond.png' : 'https://i.imgur.com/coin.png';
 }
 
 function notifyUser(userId, text, keyboard) {
@@ -281,14 +279,16 @@ async function handleVote(telegramId, lotKey) {
     notifyChannel(
       `🏁 <b>${lots[winner[0]].prize} победил в голосовании!</b>\n\n` +
       `⏳ Аукцион начнётся через ${Math.floor((settings.auctionStartDelay || 300) / 60)} минут!\n` +
-      `Готовьте коины! 🪙`
+      `Готовьте коины! 🪙`,
+      lotIcon(lots[winner[0]].uc)
     );
 
     // Notify 5 min warning if delay > 5 min
     if (delay > 5 * 60 * 1000) {
       setTimeout(() => {
         notifyChannel(
-          `⚡ <b>Аукцион на ${lots[winner[0]].prize} начнётся через 5 минут!</b>\n\nГотовьте коины! 🪙`
+          `⚡ <b>Аукцион на ${lots[winner[0]].prize} начнётся через 5 минут!</b>\n\nГотовьте коины! 🪙`,
+          lotIcon(lots[winner[0]].uc)
         );
         broadcast({ type: 'AUCTION_SOON', prize: lots[winner[0]].prize, seconds: 300 });
       }, delay - 5 * 60 * 1000);
@@ -318,13 +318,13 @@ async function launchAuction(lotKey) {
   startAuctionTimer();
 
   const lots = getLots();
-  notifyChannelWithPhoto(
+  notifyChannel(
     `🔥 <b>Аукцион начался!</b>\n\n` +
     `🎁 Лот: <b>${lots[lotKey].prize}</b>\n` +
     `💰 Рыночная цена: ${lots[lotKey].marketPrice.toLocaleString('ru-RU')} сум\n` +
     `🪙 1 ставка = ${lots[lotKey].bidCoins || 1} коин(а) = ${(lots[lotKey].bidCoins||1) * (settings.coinCost||500)} сум\n\n` +
     `👉 Участвуй прямо сейчас!`,
-    lots[lotKey]
+    lotIcon(lots[lotKey].uc)
   );
 }
 
@@ -612,7 +612,8 @@ app.get('/prices', (req, res) => res.json({
     uc1800: { uc: 1800, price: 300000 }
   },
   maxDiscount: settings.maxDiscount || 15000,
-  coinCost: settings.coinCost || 500
+  coinCost: settings.coinCost || 500,
+  botUsername: process.env.BOT_USERNAME || 'ucbid_uz_bot'
 }));
 app.get('/leaderboard', (req, res) => res.json(leaderboard));
 app.get('/history', async (req, res) => res.json(await db.getAuctionHistory()));

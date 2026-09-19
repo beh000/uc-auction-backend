@@ -6,6 +6,11 @@ const USER_BOT_TOKEN = process.env.USER_BOT_TOKEN;
 const PAYMENT_CARD = process.env.PAYMENT_CARD || 'Номер не задан';
 const PAYMENT_NAME = process.env.PAYMENT_NAME || 'UC Auction';
 const BOT_USERNAME = process.env.BOT_USERNAME || 'ucbid_uz_bot';
+// Telegram Payments provider token (Click, connected via BotFather). This is
+// currently a TEST token, so the "pay by card" button is only shown to the
+// admin (see sendCoinPaymentDetails) until a Live token replaces it — real
+// players must keep using the manual transfer flow until then.
+const CLICK_PROVIDER_TOKEN = process.env.CLICK_PROVIDER_TOKEN;
 
 // Pack sizes are fixed; the price per coin always tracks the live coinCost
 // setting instead of being baked in, so a /set coinCost change is reflected
@@ -34,6 +39,25 @@ function getJson(path) {
     });
     req.on('error', () => resolve(null));
     req.end();
+  });
+}
+
+// Routed through the same internal /add-coins endpoint the admin's manual
+// confirmation uses (rather than writing to the DB directly) so a Telegram
+// Payments purchase also broadcasts COINS_ADDED to the player's open Mini App.
+function creditCoinsInternal(telegramId, name, amount) {
+  return new Promise((resolve) => {
+    const body = JSON.stringify({ telegramId, name, amount, adminKey: process.env.ADMIN_KEY });
+    const req = http.request({
+      hostname: '127.0.0.1', port: process.env.PORT || 3000,
+      path: '/add-coins', method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) }
+    }, res => {
+      let d = ''; res.on('data', c => d += c);
+      res.on('end', () => { try { resolve(JSON.parse(d)); } catch(e) { resolve(null); } });
+    });
+    req.on('error', () => resolve(null));
+    req.write(body); req.end();
   });
 }
 
@@ -90,6 +114,15 @@ function sendPhoto(chatId, fileId, caption) {
 // or screenshot prompt at all.
 async function sendCoinPaymentDetails(chatId, userId, pack, name) {
   sessions[userId] = { step: 'waiting_coins_screenshot', pack, name };
+  const buttons = [];
+  // Click is only connected with a TEST provider token right now (test
+  // payments don't move real money and use fake card numbers) — only the
+  // admin sees this button, so real players never hit a non-working "pay"
+  // flow. Drop this check once a Live token replaces the test one.
+  if (CLICK_PROVIDER_TOKEN && String(userId) === String(process.env.ADMIN_CHAT_ID)) {
+    buttons.push([{ text: '💳 Оплатить картой (Click, ТЕСТ)', callback_data: `clickpay_${pack.id}` }]);
+  }
+  buttons.push([{ text: '❌ Отмена', callback_data: 'cancel' }]);
   await send(chatId,
     `🪙 <b>${pack.count} коинов — ${pack.price.toLocaleString('ru-RU')} сум</b>\n\n` +
     `💳 <b>Реквизиты для оплаты:</b>\n` +
@@ -98,8 +131,29 @@ async function sendCoinPaymentDetails(chatId, userId, pack, name) {
     `💰 Сумма к переводу: <b>${pack.price.toLocaleString('ru-RU')} сум</b>\n\n` +
     `📸 После перевода отправь скриншот чека прямо сюда.\n` +
     `⏱ Коины зачислим в течение 5-15 минут.`,
-    [[{ text: '❌ Отмена', callback_data: 'cancel' }]]
+    buttons
   );
+}
+
+// TEST-token invoice for verifying the Telegram Payments (Click) wiring end
+// to end before it's ever shown to a real player. amount is in the smallest
+// currency unit per the Bot API contract (UZS exponent 2 → ×100); this is
+// the one detail that couldn't be confirmed against Click's own docs (blocked
+// network access) — check the on-screen amount in the test checkout and
+// adjust the ×100 here if it's off by that factor.
+async function sendClickTestInvoice(chatId, userId, pack) {
+  if (!CLICK_PROVIDER_TOKEN) { await send(chatId, '❌ Оплата картой пока не настроена'); return; }
+  const payload = JSON.stringify({ type: 'coins', packId: pack.id, userId: String(userId) });
+  const r = await tgRequest('sendInvoice', {
+    chat_id: chatId,
+    title: `${pack.count} коинов`,
+    description: `Пополнение баланса на ${pack.count} коинов для UC Auction (ТЕСТОВЫЙ платёж)`,
+    payload,
+    provider_token: CLICK_PROVIDER_TOKEN,
+    currency: 'UZS',
+    prices: [{ label: `${pack.count} коинов`, amount: pack.price * 100 }]
+  });
+  if (!r.ok) await send(chatId, '❌ Не удалось создать счёт: ' + (r.description || 'неизвестная ошибка'));
 }
 
 // Shared by the "Купить UC напрямую" button and the buy_uc deep link.
@@ -134,6 +188,20 @@ async function showMenu(chatId, name) {
 }
 
 async function handleUpdate(update) {
+  // Telegram requires an answer within 10s or the payment UI shows an error
+  // to the player. Only the payload shape is checked here — pack existence
+  // is re-checked in successful_payment before any coins are credited.
+  if (update.pre_checkout_query) {
+    const pcq = update.pre_checkout_query;
+    let ok = false;
+    try { ok = JSON.parse(pcq.invoice_payload).type === 'coins'; } catch(e) {}
+    await tgRequest('answerPreCheckoutQuery', ok
+      ? { pre_checkout_query_id: pcq.id, ok: true }
+      : { pre_checkout_query_id: pcq.id, ok: false, error_message: 'Ошибка платежа, попробуй снова' }
+    );
+    return;
+  }
+
   if (update.callback_query) {
     const cb = update.callback_query;
     const chatId = cb.message.chat.id;
@@ -158,6 +226,14 @@ async function handleUpdate(update) {
       const pack = packs.find(p => p.id === data.replace('pack_', ''));
       if (!pack) return;
       await sendCoinPaymentDetails(chatId, userId, pack, name);
+      return;
+    }
+
+    if (data.startsWith('clickpay_')) {
+      const { packs } = await getPrices();
+      const pack = packs.find(p => p.id === data.replace('clickpay_', ''));
+      if (!pack) return;
+      await sendClickTestInvoice(chatId, userId, pack);
       return;
     }
 
@@ -240,6 +316,33 @@ async function handleUpdate(update) {
   const text = (msg.text || '').trim();
   const session = sessions[userId];
   const winSession = winnerSessions[userId];
+
+  // Telegram Payments (Click) purchase completed — credit coins immediately,
+  // no screenshot/admin confirmation needed for this path.
+  if (msg.successful_payment) {
+    const sp = msg.successful_payment;
+    try {
+      const payload = JSON.parse(sp.invoice_payload);
+      if (payload.type === 'coins') {
+        const { packs } = await getPrices();
+        const pack = packs.find(p => p.id === payload.packId);
+        if (pack) {
+          const result = await creditCoinsInternal(payload.userId, name, pack.count);
+          await send(chatId,
+            `✅ <b>Оплата прошла!</b>\n🪙 +${pack.count} коинов зачислено!` +
+            (result?.coins != null ? `\n💼 Баланс: ${result.coins} 🪙` : '')
+          );
+          try {
+            const adminBot = require('./admin-bot');
+            await adminBot.notifyAdmin(
+              `💳 <b>Автооплата через Click (ТЕСТ)</b>\n👤 ${name} (<code>${payload.userId}</code>)\n🪙 +${pack.count} коинов\n💰 ${sp.total_amount / 100} ${sp.currency}`
+            );
+          } catch(e) {}
+        }
+      }
+    } catch(e) { console.error('successful_payment handling error:', e.message); }
+    return;
+  }
 
   // Handle /start with referral
   if (text.startsWith('/start')) {
@@ -437,7 +540,7 @@ async function poll() {
   try {
     const res = await tgRequest('getUpdates', {
       offset: lastUpdateId + 1, timeout: 30,
-      allowed_updates: ['message', 'callback_query']
+      allowed_updates: ['message', 'callback_query', 'pre_checkout_query']
     });
     if (res.ok === false) {
       console.error('User poll error:', res.description || 'unknown');

@@ -39,6 +39,24 @@ async function init() {
   settings = await db.getSettings();
   leaderboard = await db.getLeaderboard();
   console.log('Settings loaded, leaderboard loaded');
+  scheduleBackups();
+}
+
+// The self-hosted Mongo has no automatic backups (Atlas had them; this
+// doesn't) — so the app takes its own daily dump and ships it to object
+// storage. First run is delayed so it doesn't compete with startup, then
+// repeats every 24h. A failed backup is logged, never lets it crash the app.
+function scheduleBackups() {
+  const { backupDatabase } = require('./backup');
+  const run = async () => {
+    try {
+      await backupDatabase(await db.connect());
+    } catch (e) {
+      console.error('Backup failed:', e.message);
+    }
+  };
+  setTimeout(run, 60 * 1000);
+  setInterval(run, 24 * 60 * 60 * 1000);
 }
 
 // ============ HELPERS ============

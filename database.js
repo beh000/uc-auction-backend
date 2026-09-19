@@ -34,7 +34,10 @@ async function connect() {
     { key: 'coinCost', value: 500 },
     { key: 'bidIncrement', value: 100 },
     { key: 'minBids', value: 20 },
-    { key: 'maxDiscount', value: 15000 },
+    // A flat sum here was a % of market price that swung wildly by lot (27%
+    // off the cheapest lot, 6% off the priciest) — a percentage scales the
+    // same discount fairly across every lot regardless of its price.
+    { key: 'discountPercent', value: 15 },
     { key: 'timerSeconds', value: 30 },
     { key: 'timerAddPerBid', value: 10 },
     { key: 'votesRequired', value: 10 },

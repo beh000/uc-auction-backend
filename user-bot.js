@@ -70,10 +70,18 @@ async function getPrices() {
     : FALLBACK_UC_ITEMS;
   const lots = prices?.lots || {};
   // ?? — 0 is a valid admin choice (discount disabled); || would erase it.
-  const maxDiscount = prices?.maxDiscount ?? 15000;
+  const discountPercent = prices?.discountPercent ?? 15;
   const coinCost = prices?.coinCost || 500;
   const packs = PACK_SIZES.map(count => ({ id: 'p' + count, count, price: count * coinCost }));
-  return { direct, lots, maxDiscount, coinCost, packs };
+  return { direct, lots, discountPercent, coinCost, packs };
+}
+
+// A flat сум discount was hugely unfair across lots of different prices (27%
+// off a cheap lot, 6% off an expensive one) — a percentage of that specific
+// lot's market price keeps it proportional no matter which lot it is.
+function discountedPrice(marketPrice, discountPercent) {
+  const amount = Math.round((marketPrice || 0) * (discountPercent / 100));
+  return { amount, price: Math.max(0, (marketPrice || 0) - amount) };
 }
 
 const sessions = {};
@@ -252,14 +260,15 @@ async function handleUpdate(update) {
     }
 
     // Consolation-discount purchase — price is the lot's market price minus
-    // maxDiscount, actually applied here (the old flow only showed the
-    // discounted number in the button text but then charged full price).
+    // its percentage discount, actually applied here (the old flow only
+    // showed the discounted number in the button text but then charged full
+    // price).
     if (data.startsWith('discount_')) {
       const lotKey = data.replace('discount_', '');
-      const { lots, maxDiscount } = await getPrices();
+      const { lots, discountPercent } = await getPrices();
       const lot = lots[lotKey];
       if (!lot) return;
-      const price = Math.max(0, (lot.marketPrice || 0) - maxDiscount);
+      const { price } = discountedPrice(lot.marketPrice, discountPercent);
       sessions[userId] = { step: 'waiting_pubg_id_uc', uc: lot.uc, price, name };
       await send(chatId, `🎁 <b>${lot.uc} UC — ${price.toLocaleString('ru-RU')} сум (со скидкой)</b>\n\nВведи свой <b>PUBG ID</b>:`);
       return;
@@ -288,7 +297,7 @@ async function handleUpdate(update) {
     }
 
     if (data === 'howto') {
-      const { coinCost, maxDiscount } = await getPrices();
+      const { coinCost, discountPercent } = await getPrices();
       await send(chatId,
         `❓ <b>Как играть?</b>\n\n` +
         `1️⃣ Купи коины (1 коин = ${coinCost} сум)\n\n` +
@@ -296,7 +305,7 @@ async function handleUpdate(update) {
         `3️⃣ Когда наберётся нужно голосов — аукцион стартует!\n\n` +
         `4️⃣ Каждая ставка:\n   • Поднимает цену\n   • Сбрасывает таймер\n\n` +
         `5️⃣ Последний поставивший — победитель!\n\n` +
-        (maxDiscount > 0 ? `🎁 Проиграл? Скидка ${maxDiscount.toLocaleString('ru-RU')} сум на UC!` : ''),
+        (discountPercent > 0 ? `🎁 Проиграл? Скидка ${discountPercent}% на UC!` : ''),
         [[{ text: '🪙 Купить коины', callback_data: 'buy_coins' }, { text: '⬅️ Назад', callback_data: 'back' }]]
       );
       return;
@@ -394,13 +403,13 @@ async function handleUpdate(update) {
     }
 
     if (param === 'discount') {
-      const { lots, maxDiscount } = await getPrices();
+      const { lots, discountPercent } = await getPrices();
       const buttons = Object.entries(lots).map(([key, lot]) => ([{
-        text: `${lot.prize} — ${Math.max(0, (lot.marketPrice||0) - maxDiscount).toLocaleString('ru-RU')} сум`,
+        text: `${lot.prize} — ${discountedPrice(lot.marketPrice, discountPercent).price.toLocaleString('ru-RU')} сум`,
         callback_data: `discount_${key}`
       }]));
       await send(chatId,
-        `🎁 <b>Скидка ${maxDiscount.toLocaleString('ru-RU')} сум на UC!</b>\n\n` +
+        `🎁 <b>Скидка ${discountPercent}% на UC!</b>\n\n` +
         `Выбери UC со скидкой:`,
         buttons
       );

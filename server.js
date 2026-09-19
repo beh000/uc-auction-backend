@@ -649,8 +649,9 @@ app.get('/prices', (req, res) => res.json({
     uc1800: { uc: 1800, price: 300000 }
   },
   // ?? — an admin can deliberately turn the consolation discount off (0),
-  // which || would silently revert to 15000.
-  maxDiscount: settings.maxDiscount ?? 15000,
+  // which || would silently revert to the default. Percentage (not a flat
+  // sum) so it scales fairly across lots of very different market prices.
+  discountPercent: settings.discountPercent ?? 15,
   coinCost: settings.coinCost || 500,
   botUsername: process.env.BOT_USERNAME || 'ucbid_uz_bot'
 }));

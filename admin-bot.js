@@ -23,7 +23,7 @@ const SETTING_FIELDS = [
   { key: 'votesRequired', label: 'Голосов для старта' },
   { key: 'auctionStartDelay', label: 'Задержка старта (сек)' },
   { key: 'minBids', label: 'Мин. ставок' },
-  { key: 'maxDiscount', label: 'Скидка проигравшим (сум)' },
+  { key: 'discountPercent', label: 'Скидка проигравшим (%)' },
 ];
 
 const LOT_ICONS = { '325': '💙', '660': '💎', '1800': '👑' };
